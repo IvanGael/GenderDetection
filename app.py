@@ -1,5 +1,4 @@
-# pip install opencv-python-headless torch ultralytics
-
+# pip install opencv-python-headless torch torchvision ultralytics
 
 import cv2
 import torch
@@ -19,7 +18,13 @@ num_ftrs = gender_model.classifier[1].in_features
 gender_model.classifier[1] = nn.Linear(num_ftrs, 2)  # Assuming binary classification for gender
 gender_model.eval()
 
-# Transformation for gender model
+# Load a pre-trained age estimation model
+age_model = models.resnet18(pretrained=True)
+num_ftrs = age_model.fc.in_features
+age_model.fc = nn.Linear(num_ftrs, 101)  # Assuming age prediction in the range [0, 100]
+age_model.eval()
+
+# Transformation for models
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -29,7 +34,7 @@ transform = transforms.Compose([
 # Gender classes
 gender_classes = ['Male', 'Female']
 
-def detect_and_predict_gender(frame):
+def detect_and_predict_gender_and_age(frame):
     # Perform object detection
     results = model(frame)
 
@@ -37,7 +42,7 @@ def detect_and_predict_gender(frame):
     bboxes = results.xyxy[0].cpu().numpy()  # xyxy format: (x1, y1, x2, y2, confidence, class)
     bboxes = [bbox for bbox in bboxes if bbox[5] == 0]  # Class 0 is for person
 
-    genders = []
+    predictions = []
     for bbox in bboxes:
         x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
         # Crop the detected person
@@ -52,23 +57,33 @@ def detect_and_predict_gender(frame):
             augmented_img = transform(torchvision.transforms.functional.hflip(person_pil)).unsqueeze(0)
             augmented_imgs.append(augmented_img)
         
-        # Predict gender with augmented images
-        all_preds = []
+        # Predict gender and age with augmented images
+        all_gender_preds = []
+        all_age_preds = []
         with torch.no_grad():
             for img in augmented_imgs:
                 gender_pred = gender_model(img)
-                all_preds.append(gender_pred)
+                age_pred = age_model(img)
+                all_gender_preds.append(gender_pred)
+                all_age_preds.append(age_pred)
         
         # Average the predictions
-        avg_pred = torch.mean(torch.stack(all_preds), dim=0)
-        gender_confidence = torch.nn.functional.softmax(avg_pred, dim=1)[0]
-        gender_idx = torch.argmax(avg_pred, dim=1).item()
-        gender = gender_classes[gender_idx]
-        confidence = gender_confidence[gender_idx].item()
+        avg_gender_pred = torch.mean(torch.stack(all_gender_preds), dim=0)
+        avg_age_pred = torch.mean(torch.stack(all_age_preds), dim=0)
         
-        genders.append((x1, y1, x2, y2, gender, confidence))
+        # Gender prediction
+        gender_confidence = torch.nn.functional.softmax(avg_gender_pred, dim=1)[0]
+        gender_idx = torch.argmax(avg_gender_pred, dim=1).item()
+        gender = gender_classes[gender_idx]
+        gender_confidence_val = gender_confidence[gender_idx].item()
 
-    return genders
+        # Age prediction
+        age = torch.argmax(avg_age_pred, dim=1).item()
+        age_confidence_val = torch.nn.functional.softmax(avg_age_pred, dim=1)[0][age].item()
+        
+        predictions.append((x1, y1, x2, y2, gender, gender_confidence_val, age, age_confidence_val))
+
+    return predictions
 
 def process_video(video_path):
     # Open video capture
@@ -79,17 +94,17 @@ def process_video(video_path):
         if not ret:
             break
 
-        # Detect persons and predict genders
-        genders = detect_and_predict_gender(frame)
+        # Detect persons and predict genders and ages
+        predictions = detect_and_predict_gender_and_age(frame)
 
         # Draw bounding boxes and labels on the frame
-        for (x1, y1, x2, y2, gender, confidence) in genders:
-            label = f"{gender}: {confidence:.2f}"
+        for (x1, y1, x2, y2, gender, gender_confidence, age, age_confidence) in predictions:
+            label = f"{gender}: {gender_confidence:.2f}, Age: {age} ({age_confidence:.2f})"
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2)
 
         # Display the frame
-        cv2.imshow('Gender Detection', frame)
+        cv2.imshow('Gender and Age Estimation', frame)
 
         # Break loop on 'q' key press
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -103,12 +118,12 @@ def process_image(image_path):
     # Load image
     frame = cv2.imread(image_path)
 
-    # Detect persons and predict genders
-    genders = detect_and_predict_gender(frame)
+    # Detect persons and predict genders and ages
+    predictions = detect_and_predict_gender_and_age(frame)
 
     # Draw bounding boxes and labels on the frame
-    for (x1, y1, x2, y2, gender, confidence) in genders:
-        label = f"{gender}: {confidence:.2f}"
+    for (x1, y1, x2, y2, gender, gender_confidence, age, age_confidence) in predictions:
+        label = f"{gender}: {gender_confidence:.2f}, Age: {age} ({age_confidence:.2f})"
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
         cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2)
 
@@ -123,13 +138,13 @@ def process_image(image_path):
     window_height = int(frame.shape[0] * scale)
 
     # Center the window on the screen
-    cv2.namedWindow('Gender Detection', cv2.WINDOW_NORMAL)
-    cv2.resizeWindow('Gender Detection', window_width, window_height)
+    cv2.namedWindow('Gender and Age Estimation', cv2.WINDOW_NORMAL)
+    cv2.resizeWindow('Gender and Age Estimation', window_width, window_height)
     screen_width, screen_height = screen_res
-    cv2.moveWindow('Gender Detection', (screen_width - window_width) // 2, (screen_height - window_height) // 2)
+    cv2.moveWindow('Gender and Age Estimation', (screen_width - window_width) // 2, (screen_height - window_height) // 2)
 
     # Display the frame
-    cv2.imshow('Gender Detection', frame)
+    cv2.imshow('Gender and Age Estimation', frame)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
