@@ -1,5 +1,6 @@
 # pip install opencv-python-headless torch torchvision ultralytics
 
+
 import cv2
 import torch
 import torchvision
@@ -81,7 +82,9 @@ def detect_and_predict_gender_and_age(frame):
         age = torch.argmax(avg_age_pred, dim=1).item()
         age_confidence_val = torch.nn.functional.softmax(avg_age_pred, dim=1)[0][age].item()
         
-        predictions.append((x1, y1, x2, y2, gender, gender_confidence_val, age, age_confidence_val))
+        # Apply confidence threshold
+        if gender_confidence_val > 0.5:  # Adjust threshold as needed
+            predictions.append((x1, y1, x2, y2, gender, gender_confidence_val, age, age_confidence_val))
 
     return predictions
 
